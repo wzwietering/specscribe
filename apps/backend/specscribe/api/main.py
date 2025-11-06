@@ -23,7 +23,7 @@ from specscribe.api.middleware import (
     ExceptionHandlingMiddleware,
     RequestIDMiddleware,
 )
-from specscribe.api.routes import auth, questions, sessions, usage
+from specscribe.api.routes import auth, billing, questions, sessions, usage
 from specscribe.core.logging import init_logging
 
 app = FastAPI(
@@ -78,6 +78,7 @@ app.include_router(auth.router, prefix="/api/v1", tags=["authentication"])
 app.include_router(sessions.router, prefix="/api/v1", tags=["sessions"])
 app.include_router(questions.router, prefix="/api/v1", tags=["questions"])
 app.include_router(usage.router, prefix="/api/v1", tags=["usage"])
+app.include_router(billing.router, prefix="/api/v1", tags=["billing"])
 
 
 # Exception handler for validation exceptions from dependency injection

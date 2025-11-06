@@ -11,6 +11,7 @@
   },
   "dependencies": {
     "@specscribe/shared-types": "file:../../packages/shared-types",
+    "@stripe/stripe-js": "8.3.0",
     "@tailwindcss/postcss": "4.1.14",
     "next": "15.5.4",
     "postcss": "8.5.6",

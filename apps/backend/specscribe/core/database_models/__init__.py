@@ -3,6 +3,7 @@ from typing import Optional
 from uuid import uuid4
 
 from sqlalchemy import (
+    Boolean,
     DateTime,
     Engine,
     ForeignKey,
@@ -46,6 +47,7 @@ class UserTable(Base):
     name: Mapped[str | None] = mapped_column(String, nullable=True)
     avatar_url: Mapped[str | None] = mapped_column(String, nullable=True)
     tier: Mapped[str] = mapped_column(String, default="free")  # 'free' | 'pro'
+    stripe_customer_id: Mapped[str | None] = mapped_column(String, nullable=True)  # Stripe customer ID
     created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(UTC))
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, default=lambda: datetime.now(UTC), onupdate=lambda: datetime.now(UTC)
@@ -58,6 +60,7 @@ class UserTable(Base):
     __table_args__ = (
         Index("ix_users_email", "email"),
         Index("ix_users_provider_id", "provider", "provider_id", unique=True),
+        Index("ix_users_stripe_customer_id", "stripe_customer_id"),
     )
 
 
@@ -208,6 +211,61 @@ class UsageEventTable(Base):
     __table_args__ = (Index("ix_usage_user_type_time", "user_id", "event_type", "created_at"),)
 
 
+class SubscriptionTable(Base):
+    """Stripe subscription tracking."""
+
+    __tablename__ = "subscriptions"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: str(uuid4()))
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), unique=True)
+    stripe_customer_id: Mapped[str] = mapped_column(String)
+    stripe_subscription_id: Mapped[str] = mapped_column(String, unique=True)
+    status: Mapped[str] = mapped_column(String)  # 'active', 'past_due', 'canceled', 'incomplete', 'trialing'
+    plan_interval: Mapped[str] = mapped_column(String)  # 'month' | 'year'
+    current_period_start: Mapped[datetime] = mapped_column(DateTime)
+    current_period_end: Mapped[datetime] = mapped_column(DateTime)
+    cancel_at_period_end: Mapped[bool] = mapped_column(Boolean, default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(UTC))
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, default=lambda: datetime.now(UTC), onupdate=lambda: datetime.now(UTC)
+    )
+
+    # Relationships
+    user: Mapped["UserTable"] = relationship()
+
+    # Indexes
+    __table_args__ = (
+        Index("ix_subscriptions_user_id", "user_id", unique=True),
+        Index("ix_subscriptions_stripe_customer_id", "stripe_customer_id"),
+        Index("ix_subscriptions_stripe_subscription_id", "stripe_subscription_id", unique=True),
+        Index("ix_subscriptions_status", "status"),
+    )
+
+
+class PaymentEventTable(Base):
+    """Audit log for Stripe webhook events."""
+
+    __tablename__ = "payment_events"
+
+    id: Mapped[str] = mapped_column(String, primary_key=True, default=lambda: str(uuid4()))
+    user_id: Mapped[str | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    event_type: Mapped[str] = mapped_column(String)  # Stripe event type
+    stripe_event_id: Mapped[str] = mapped_column(String, unique=True)  # For idempotency
+    status: Mapped[str] = mapped_column(String)  # 'processed', 'failed', 'skipped'
+    event_data: Mapped[str | None] = mapped_column(Text, nullable=True)  # JSON serialized event data
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(UTC))
+
+    # Relationships
+    user: Mapped[Optional["UserTable"]] = relationship()
+
+    # Indexes
+    __table_args__ = (
+        Index("ix_payment_events_stripe_event_id", "stripe_event_id", unique=True),
+        Index("ix_payment_events_user_id", "user_id"),
+        Index("ix_payment_events_created_at", "created_at"),
+    )
+
+
 # Export core models only
 __all__ = [
     "Base",
@@ -219,5 +277,7 @@ __all__ = [
     "OAuthStateTable",
     "RefreshTokenTable",
     "UsageEventTable",
+    "SubscriptionTable",
+    "PaymentEventTable",
     "enable_sqlite_foreign_keys",
 ]

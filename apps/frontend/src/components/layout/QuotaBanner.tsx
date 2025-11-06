@@ -113,8 +113,7 @@ export function QuotaBanner() {
   };
 
   const handleUpgrade = () => {
-    // TODO: Navigate to upgrade page or open upgrade modal
-    console.log("Upgrade to Pro clicked");
+    window.location.href = "/billing";
   };
 
   if (!isVisible || !resetDate || !usage) {

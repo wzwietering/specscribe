@@ -417,6 +417,86 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/billing/create-checkout-session": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Create Checkout Session
+         * @description Create Stripe Checkout session for subscription.
+         */
+        post: operations["create_checkout_session_api_v1_billing_create_checkout_session_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/billing/create-portal-session": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Create Portal Session
+         * @description Create Stripe Customer Portal session.
+         */
+        post: operations["create_portal_session_api_v1_billing_create_portal_session_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/billing/subscription": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Subscription
+         * @description Get user's current subscription.
+         */
+        get: operations["get_subscription_api_v1_billing_subscription_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/billing/webhook": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Stripe Webhook
+         * @description Handle Stripe webhook events.
+         */
+        post: operations["stripe_webhook_api_v1_billing_webhook_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/": {
         parameters: {
             query?: never;
@@ -527,15 +607,39 @@ export interface components {
             text: string;
         };
         /**
+         * CheckoutSessionResponse
+         * @description Response with checkout URL.
+         */
+        CheckoutSessionResponse: {
+            /** Checkout Url */
+            checkout_url: string;
+        };
+        /**
          * ConversationState
          * @description All possible conversation states in the interview pipeline.
          * @enum {string}
          */
         ConversationState: "initializing" | "generating_questions" | "waiting_for_input" | "processing_answer" | "generating_followups" | "assessing_completeness" | "generating_requirements" | "completed" | "failed";
+        /**
+         * CreateCheckoutSessionRequest
+         * @description Request to create checkout session.
+         */
+        CreateCheckoutSessionRequest: {
+            /** Plan Interval */
+            plan_interval: string;
+        };
         /** HTTPValidationError */
         HTTPValidationError: {
             /** Detail */
             detail?: components["schemas"]["ValidationError"][];
+        };
+        /**
+         * PortalSessionResponse
+         * @description Response with portal URL.
+         */
+        PortalSessionResponse: {
+            /** Portal Url */
+            portal_url: string;
         };
         /** Question */
         Question: {
@@ -770,6 +874,20 @@ export interface components {
              * Format: date-time
              */
             updated_at: string;
+        };
+        /**
+         * SubscriptionResponse
+         * @description Subscription details response.
+         */
+        SubscriptionResponse: {
+            /** Status */
+            status: string;
+            /** Plan Interval */
+            plan_interval: string;
+            /** Current Period End */
+            current_period_end: string;
+            /** Cancel At Period End */
+            cancel_at_period_end: boolean;
         };
         /**
          * UsageStatsResponse
@@ -1584,6 +1702,112 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["UsageStatsResponse"];
+                };
+            };
+        };
+    };
+    create_checkout_session_api_v1_billing_create_checkout_session_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateCheckoutSessionRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CheckoutSessionResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_portal_session_api_v1_billing_create_portal_session_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PortalSessionResponse"];
+                };
+            };
+        };
+    };
+    get_subscription_api_v1_billing_subscription_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["SubscriptionResponse"] | null;
+                };
+            };
+        };
+    };
+    stripe_webhook_api_v1_billing_webhook_post: {
+        parameters: {
+            query?: never;
+            header: {
+                "stripe-signature": string;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: string;
+                    };
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };
