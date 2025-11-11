@@ -33,7 +33,7 @@ def upgrade() -> None:
         sa.Column('plan_interval', sa.String(), nullable=False),
         sa.Column('current_period_start', sa.DateTime(), nullable=False),
         sa.Column('current_period_end', sa.DateTime(), nullable=False),
-        sa.Column('cancel_at_period_end', sa.Boolean(), nullable=False, server_default='0'),
+        sa.Column('cancel_at_period_end', sa.Boolean(), nullable=False, server_default=sa.false()),
         sa.Column('created_at', sa.DateTime(), nullable=False),
         sa.Column('updated_at', sa.DateTime(), nullable=False),
         sa.ForeignKeyConstraint(['user_id'], ['users.id'], ondelete='CASCADE'),

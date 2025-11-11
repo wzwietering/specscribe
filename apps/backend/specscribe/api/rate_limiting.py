@@ -160,10 +160,47 @@ RETRY_USER_WINDOW_SECONDS = int(os.getenv("RETRY_USER_RATE_LIMIT_WINDOW_SECONDS"
 CRUD_MAX_REQUESTS = int(os.getenv("CRUD_RATE_LIMIT_MAX_REQUESTS", "30"))
 CRUD_WINDOW_SECONDS = int(os.getenv("CRUD_RATE_LIMIT_WINDOW_SECONDS", "60"))
 
+# Billing checkout: 5 requests per hour per user
+# - Prevents abuse of Stripe checkout session creation
+# - Allows legitimate retries while preventing spam
+# - 1 hour window to prevent excessive Stripe API costs
+BILLING_CHECKOUT_MAX_REQUESTS = int(os.getenv("BILLING_CHECKOUT_RATE_LIMIT_MAX_REQUESTS", "5"))
+BILLING_CHECKOUT_WINDOW_SECONDS = int(os.getenv("BILLING_CHECKOUT_RATE_LIMIT_WINDOW_SECONDS", "3600"))
+
+# Billing portal: 10 requests per hour per user
+# - Prevents abuse of Stripe portal session creation
+# - Higher limit than checkout as portal access is more common
+# - 1 hour window for reasonable access control
+BILLING_PORTAL_MAX_REQUESTS = int(os.getenv("BILLING_PORTAL_RATE_LIMIT_MAX_REQUESTS", "10"))
+BILLING_PORTAL_WINDOW_SECONDS = int(os.getenv("BILLING_PORTAL_RATE_LIMIT_WINDOW_SECONDS", "3600"))
+
 # Global rate limiters
 oauth_rate_limiter = RateLimiter(max_requests=OAUTH_MAX_REQUESTS, window_seconds=OAUTH_WINDOW_SECONDS)
 refresh_token_rate_limiter = RateLimiter(max_requests=REFRESH_MAX_REQUESTS, window_seconds=REFRESH_WINDOW_SECONDS)
 retry_requirements_rate_limiter = RateLimiter(max_requests=RETRY_MAX_REQUESTS, window_seconds=RETRY_WINDOW_SECONDS)
 retry_user_rate_limiter = RateLimiter(max_requests=RETRY_USER_MAX_REQUESTS, window_seconds=RETRY_USER_WINDOW_SECONDS)
 crud_rate_limiter = RateLimiter(max_requests=CRUD_MAX_REQUESTS, window_seconds=CRUD_WINDOW_SECONDS)
+billing_checkout_rate_limiter = RateLimiter(
+    max_requests=BILLING_CHECKOUT_MAX_REQUESTS, window_seconds=BILLING_CHECKOUT_WINDOW_SECONDS
+)
+billing_portal_rate_limiter = RateLimiter(
+    max_requests=BILLING_PORTAL_MAX_REQUESTS, window_seconds=BILLING_PORTAL_WINDOW_SECONDS
+)
 rate_limit_middleware = RateLimitMiddleware(oauth_rate_limiter)
+
+
+def check_billing_rate_limit(user_id: str, limiter: RateLimiter, endpoint_name: str) -> None:
+    """Check rate limit for billing endpoints."""
+    allowed, reset_time = limiter.is_allowed(user_id)
+
+    if not allowed:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail={
+                "error": "rate_limit_exceeded",
+                "message": f"Too many {endpoint_name} requests. Please try again later.",
+                "details": [{"type": "rate_limit", "message": f"Rate limit reset at {reset_time}"}],
+                "status_code": status.HTTP_429_TOO_MANY_REQUESTS,
+            },
+            headers={"Retry-After": str(reset_time - int(time.time()))},
+        )

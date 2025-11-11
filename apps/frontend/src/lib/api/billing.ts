@@ -1,26 +1,13 @@
 /**
  * Billing API client for Stripe integration
- *
- * TODO: After running `npm run generate:types` in packages/shared-types,
- * replace these inline types with imports from "@specscribe/shared-types"
  */
 
 import { apiClient } from "./apiClient";
+import type { components } from "@specscribe/shared-types";
 
-export interface CheckoutSessionResponse {
-  checkout_url: string;
-}
-
-export interface PortalSessionResponse {
-  portal_url: string;
-}
-
-export interface Subscription {
-  status: string;
-  plan_interval: "month" | "year";
-  current_period_end: string;
-  cancel_at_period_end: boolean;
-}
+export type CheckoutSessionResponse = components["schemas"]["CheckoutSessionResponse"];
+export type PortalSessionResponse = components["schemas"]["PortalSessionResponse"];
+export type Subscription = components["schemas"]["SubscriptionResponse"];
 
 /**
  * Create a Stripe Checkout session for subscription

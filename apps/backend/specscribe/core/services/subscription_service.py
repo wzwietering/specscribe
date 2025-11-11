@@ -1,5 +1,6 @@
 """Subscription business logic service."""
 
+import logging
 from datetime import UTC, datetime
 
 import stripe
@@ -8,6 +9,8 @@ from sqlalchemy.orm import Session
 from specscribe.core.database_models import PaymentEventTable, SubscriptionTable, UserTable
 from specscribe.core.services.stripe_service import StripeService
 from specscribe.core.storage import DatabaseManager
+
+logger = logging.getLogger(__name__)
 
 
 class SubscriptionService:
@@ -81,7 +84,7 @@ class SubscriptionService:
         with self.storage.SessionLocal() as db_session:
             return db_session.query(SubscriptionTable).filter(SubscriptionTable.user_id == user_id).first()
 
-    def handle_checkout_completed(self, session: stripe.checkout.Session) -> None:
+    def handle_checkout_completed(self, db_session: Session, session: stripe.checkout.Session) -> None:
         """Handle checkout.session.completed webhook event."""
         customer_id = session.customer
         subscription_id = session.subscription
@@ -94,99 +97,163 @@ class SubscriptionService:
             subscription = self.stripe_service.get_subscription(subscription_id)
         else:
             subscription = subscription_id
-        self._upsert_subscription(subscription)
+        self._upsert_subscription(db_session, subscription)
 
-    def handle_subscription_created(self, subscription: stripe.Subscription) -> None:
+    def handle_subscription_created(self, db_session: Session, subscription: stripe.Subscription) -> None:
         """Handle customer.subscription.created webhook event."""
-        self._upsert_subscription(subscription)
+        self._upsert_subscription(db_session, subscription)
 
-    def handle_subscription_updated(self, subscription: stripe.Subscription) -> None:
+    def handle_subscription_updated(self, db_session: Session, subscription: stripe.Subscription) -> None:
         """Handle customer.subscription.updated webhook event."""
-        self._upsert_subscription(subscription)
+        self._upsert_subscription(db_session, subscription)
 
-    def handle_subscription_deleted(self, subscription: stripe.Subscription) -> None:
+    def handle_subscription_deleted(self, db_session: Session, subscription: stripe.Subscription) -> None:
         """Handle customer.subscription.deleted webhook event."""
-        with self.storage.SessionLocal() as db_session:
-            # Find user by customer ID
-            user = db_session.query(UserTable).filter(UserTable.stripe_customer_id == subscription.customer).first()
-            if not user:
-                return
+        # Find user by customer ID
+        user = db_session.query(UserTable).filter(UserTable.stripe_customer_id == subscription.customer).first()
+        if not user:
+            return
 
-            # Downgrade user tier
-            user.tier = "free"
+        # Downgrade user tier
+        old_tier = user.tier
+        user.tier = "free"
 
-            # Update or delete subscription record
-            sub_record = (
-                db_session.query(SubscriptionTable)
-                .filter(SubscriptionTable.stripe_subscription_id == subscription.id)
-                .first()
+        logger.info(
+            "User tier downgraded",
+            extra={
+                "user_id": user.id,
+                "old_tier": old_tier,
+                "new_tier": "free",
+                "subscription_id": subscription.id,
+                "reason": "subscription_deleted",
+            },
+        )
+
+        # Update or delete subscription record
+        sub_record = (
+            db_session.query(SubscriptionTable)
+            .filter(SubscriptionTable.stripe_subscription_id == subscription.id)
+            .first()
+        )
+        if sub_record:
+            sub_record.status = "canceled"
+            sub_record.updated_at = datetime.now(UTC)
+            logger.info(
+                "Subscription record updated to canceled",
+                extra={"user_id": user.id, "subscription_id": subscription.id},
             )
-            if sub_record:
-                sub_record.status = "canceled"
-                sub_record.updated_at = datetime.now(UTC)
 
-            db_session.commit()
+    def _determine_plan_interval(self, subscription: stripe.Subscription) -> str:
+        """Extract plan interval from subscription."""
+        if subscription.items and subscription.items.data:
+            price = subscription.items.data[0].price
+            if price.recurring and price.recurring.interval == "year":
+                return "year"
+        return "month"
 
-    def _upsert_subscription(self, subscription: stripe.Subscription) -> None:
+    def _extract_subscription_timestamps(self, subscription: stripe.Subscription) -> tuple[int, int] | None:
+        """Extract and validate timestamps from subscription."""
+        period_start = getattr(subscription, "current_period_start", None)
+        period_end = getattr(subscription, "current_period_end", None)
+
+        if not isinstance(period_start, int) or not isinstance(period_end, int):
+            return None
+
+        return period_start, period_end
+
+    def _update_subscription_record(
+        self,
+        sub_record: SubscriptionTable,
+        subscription: stripe.Subscription,
+        plan_interval: str,
+        timestamps: tuple[int, int],
+    ) -> None:
+        """Update existing subscription record."""
+        period_start, period_end = timestamps
+        sub_record.status = subscription.status
+        sub_record.plan_interval = plan_interval
+        sub_record.current_period_start = datetime.fromtimestamp(period_start, UTC)
+        sub_record.current_period_end = datetime.fromtimestamp(period_end, UTC)
+        sub_record.cancel_at_period_end = subscription.cancel_at_period_end or False
+        sub_record.updated_at = datetime.now(UTC)
+
+    def _create_subscription_record(
+        self, user: UserTable, subscription: stripe.Subscription, plan_interval: str, timestamps: tuple[int, int]
+    ) -> SubscriptionTable:
+        """Create new subscription record."""
+        period_start, period_end = timestamps
+        return SubscriptionTable(
+            user_id=user.id,
+            stripe_customer_id=subscription.customer,
+            stripe_subscription_id=subscription.id,
+            status=subscription.status,
+            plan_interval=plan_interval,
+            current_period_start=datetime.fromtimestamp(period_start, UTC),
+            current_period_end=datetime.fromtimestamp(period_end, UTC),
+            cancel_at_period_end=subscription.cancel_at_period_end or False,
+        )
+
+    def _update_user_tier(self, user: UserTable, subscription: stripe.Subscription) -> None:
+        """Update user tier based on subscription status."""
+        old_tier = user.tier
+        new_tier = "pro" if subscription.status in ("active", "trialing") else old_tier
+
+        if old_tier != new_tier:
+            user.tier = new_tier
+            logger.info(
+                "User tier changed",
+                extra={
+                    "user_id": user.id,
+                    "old_tier": old_tier,
+                    "new_tier": new_tier,
+                    "subscription_id": subscription.id,
+                    "subscription_status": subscription.status,
+                    "reason": "subscription_update",
+                },
+            )
+
+    def _upsert_subscription(self, db_session: Session, subscription: stripe.Subscription) -> None:
         """Create or update subscription record and upgrade user tier."""
-        with self.storage.SessionLocal() as db_session:
-            # Find user by customer ID
-            user = db_session.query(UserTable).filter(UserTable.stripe_customer_id == subscription.customer).first()
-            if not user:
-                return
+        user = db_session.query(UserTable).filter(UserTable.stripe_customer_id == subscription.customer).first()
+        if not user:
+            return
 
-            # Determine plan interval from subscription
-            plan_interval = "month"
-            if subscription.items and subscription.items.data:
-                price = subscription.items.data[0].price
-                if price.recurring and price.recurring.interval == "year":
-                    plan_interval = "year"
+        plan_interval = self._determine_plan_interval(subscription)
+        timestamps = self._extract_subscription_timestamps(subscription)
+        if not timestamps:
+            return
 
-            # Find existing subscription
-            sub_record = (
-                db_session.query(SubscriptionTable)
-                .filter(SubscriptionTable.stripe_subscription_id == subscription.id)
-                .first()
+        sub_record = (
+            db_session.query(SubscriptionTable)
+            .filter(SubscriptionTable.stripe_subscription_id == subscription.id)
+            .first()
+        )
+
+        if sub_record:
+            logger.info(
+                "Updating subscription",
+                extra={
+                    "user_id": user.id,
+                    "subscription_id": subscription.id,
+                    "status": subscription.status,
+                    "plan_interval": plan_interval,
+                },
             )
+            self._update_subscription_record(sub_record, subscription, plan_interval, timestamps)
+        else:
+            logger.info(
+                "Creating new subscription",
+                extra={
+                    "user_id": user.id,
+                    "subscription_id": subscription.id,
+                    "status": subscription.status,
+                    "plan_interval": plan_interval,
+                },
+            )
+            new_record = self._create_subscription_record(user, subscription, plan_interval, timestamps)
+            db_session.add(new_record)
 
-            # Extract timestamps safely - use getattr for Stripe type compatibility
-            period_start = getattr(subscription, "current_period_start", None)
-            period_end = getattr(subscription, "current_period_end", None)
-            if (
-                period_start is None
-                or period_end is None
-                or not isinstance(period_start, int)
-                or not isinstance(period_end, int)
-            ):
-                return  # Invalid subscription data
-
-            if sub_record:
-                # Update existing
-                sub_record.status = subscription.status
-                sub_record.plan_interval = plan_interval
-                sub_record.current_period_start = datetime.fromtimestamp(period_start, UTC)
-                sub_record.current_period_end = datetime.fromtimestamp(period_end, UTC)
-                sub_record.cancel_at_period_end = subscription.cancel_at_period_end or False
-                sub_record.updated_at = datetime.now(UTC)
-            else:
-                # Create new
-                sub_record = SubscriptionTable(
-                    user_id=user.id,
-                    stripe_customer_id=subscription.customer,
-                    stripe_subscription_id=subscription.id,
-                    status=subscription.status,
-                    plan_interval=plan_interval,
-                    current_period_start=datetime.fromtimestamp(period_start, UTC),
-                    current_period_end=datetime.fromtimestamp(period_end, UTC),
-                    cancel_at_period_end=subscription.cancel_at_period_end or False,
-                )
-                db_session.add(sub_record)
-
-            # Upgrade user tier if subscription is active
-            if subscription.status in ("active", "trialing"):
-                user.tier = "pro"
-
-            db_session.commit()
+        self._update_user_tier(user, subscription)
 
     def log_webhook_event(
         self, db_session: Session, event_type: str, stripe_event_id: str, status: str, user_id: str | None = None
@@ -204,11 +271,3 @@ class SubscriptionService:
             user_id=user_id, event_type=event_type, stripe_event_id=stripe_event_id, status=status
         )
         db_session.add(event)
-
-    def is_event_processed(self, stripe_event_id: str) -> bool:
-        """Check if webhook event has already been processed (idempotency check)."""
-        with self.storage.SessionLocal() as db_session:
-            existing = (
-                db_session.query(PaymentEventTable).filter(PaymentEventTable.stripe_event_id == stripe_event_id).first()
-            )
-            return existing is not None

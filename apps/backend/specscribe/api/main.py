@@ -140,3 +140,20 @@ async def root():
 @app.get("/health")
 async def health_check():
     return {"status": "healthy"}
+
+
+@app.on_event("startup")
+async def validate_stripe_configuration():
+    """Validate Stripe environment variables on startup."""
+    required_vars = [
+        "STRIPE_SECRET_KEY",
+        "STRIPE_WEBHOOK_SECRET",
+        "STRIPE_PRICE_ID_MONTHLY",
+        "STRIPE_PRICE_ID_ANNUAL",
+    ]
+
+    missing_vars = [var for var in required_vars if not os.getenv(var)]
+
+    if missing_vars:
+        error_msg = f"Missing required Stripe environment variables: {', '.join(missing_vars)}"
+        raise ValueError(error_msg)

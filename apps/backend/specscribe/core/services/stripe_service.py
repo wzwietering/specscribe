@@ -4,6 +4,8 @@ import os
 from typing import Any
 
 import stripe
+from stripe import APIConnectionError, RateLimitError
+from tenacity import retry, retry_if_exception_type, stop_after_attempt, wait_exponential
 
 
 class StripeService:
@@ -16,6 +18,11 @@ class StripeService:
             raise ValueError("STRIPE_SECRET_KEY environment variable is required")
         stripe.api_key = api_key
 
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=1, max=10),
+        retry=retry_if_exception_type((RateLimitError, APIConnectionError)),
+    )
     def create_customer(self, email: str, name: str | None = None, metadata: dict[str, str] | None = None) -> str:
         """Create a Stripe customer and return customer ID."""
         customer_data: dict[str, Any] = {"email": email}
@@ -27,6 +34,11 @@ class StripeService:
         customer = stripe.Customer.create(**customer_data)
         return customer.id
 
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=1, max=10),
+        retry=retry_if_exception_type((RateLimitError, APIConnectionError)),
+    )
     def create_checkout_session(
         self, customer_id: str, price_id: str, success_url: str, cancel_url: str
     ) -> tuple[str, str]:
@@ -47,6 +59,11 @@ class StripeService:
         assert session.url is not None
         return session.id, session.url
 
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=1, max=10),
+        retry=retry_if_exception_type((RateLimitError, APIConnectionError)),
+    )
     def create_portal_session(self, customer_id: str, return_url: str) -> str:
         """Create a Stripe Customer Portal session.
 
@@ -56,10 +73,20 @@ class StripeService:
         session = stripe.billing_portal.Session.create(customer=customer_id, return_url=return_url)
         return session.url
 
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=1, max=10),
+        retry=retry_if_exception_type((RateLimitError, APIConnectionError)),
+    )
     def get_subscription(self, subscription_id: str) -> stripe.Subscription:
         """Retrieve a subscription by ID."""
         return stripe.Subscription.retrieve(subscription_id)
 
+    @retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=1, max=10),
+        retry=retry_if_exception_type((RateLimitError, APIConnectionError)),
+    )
     def cancel_subscription(self, subscription_id: str, at_period_end: bool = True) -> stripe.Subscription:
         """Cancel a subscription.
 

@@ -8,6 +8,11 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
 from pydantic import BaseModel
 
 from specscribe.api.dependencies import get_current_user_id, get_database_manager
+from specscribe.api.rate_limiting import (
+    billing_checkout_rate_limiter,
+    billing_portal_rate_limiter,
+    check_billing_rate_limit,
+)
 from specscribe.core.services.stripe_service import StripeService
 from specscribe.core.services.subscription_service import SubscriptionService
 from specscribe.core.storage import DatabaseManager
@@ -61,6 +66,9 @@ async def create_checkout_session(
     subscription_service: Annotated[SubscriptionService, Depends(get_subscription_service)],
 ) -> CheckoutSessionResponse:
     """Create Stripe Checkout session for subscription."""
+    # Check rate limit
+    check_billing_rate_limit(user_id, billing_checkout_rate_limiter, "checkout")
+
     # Validate plan interval
     if request_data.plan_interval not in ("month", "year"):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="plan_interval must be 'month' or 'year'")
@@ -85,6 +93,9 @@ async def create_portal_session(
     subscription_service: Annotated[SubscriptionService, Depends(get_subscription_service)],
 ) -> PortalSessionResponse:
     """Create Stripe Customer Portal session."""
+    # Check rate limit
+    check_billing_rate_limit(user_id, billing_portal_rate_limiter, "portal")
+
     frontend_url = os.getenv("FRONTEND_URL", "http://localhost:3000")
     return_url = f"{frontend_url}/billing"
 
@@ -113,6 +124,70 @@ async def get_subscription(
     )
 
 
+def _verify_webhook_signature(body: bytes, signature: str, stripe_service: StripeService) -> stripe.Event:
+    """Verify webhook signature and return event."""
+    try:
+        return stripe_service.construct_webhook_event(body, signature)
+    except ValueError as e:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid payload") from e
+    except stripe.SignatureVerificationError as e:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Invalid signature") from e
+
+
+def _check_event_already_processed(db_session, subscription_service: SubscriptionService, event: stripe.Event) -> bool:
+    """Check if event already processed via idempotency."""
+    try:
+        subscription_service.log_webhook_event(
+            db_session=db_session, event_type=event.type, stripe_event_id=event.id, status="processing"
+        )
+        db_session.commit()
+        return False
+    except Exception:
+        db_session.rollback()
+        return True
+
+
+def _process_webhook_event(db_session, subscription_service: SubscriptionService, event: stripe.Event) -> None:
+    """Process webhook event based on type."""
+    if event.type == "checkout.session.completed":
+        session = stripe.checkout.Session.construct_from(event.data.object, stripe.api_key)
+        subscription_service.handle_checkout_completed(db_session, session)
+
+    elif event.type == "customer.subscription.created":
+        subscription = stripe.Subscription.construct_from(event.data.object, stripe.api_key)
+        subscription_service.handle_subscription_created(db_session, subscription)
+
+    elif event.type == "customer.subscription.updated":
+        subscription = stripe.Subscription.construct_from(event.data.object, stripe.api_key)
+        subscription_service.handle_subscription_updated(db_session, subscription)
+
+    elif event.type == "customer.subscription.deleted":
+        subscription = stripe.Subscription.construct_from(event.data.object, stripe.api_key)
+        subscription_service.handle_subscription_deleted(db_session, subscription)
+
+
+def _log_webhook_success(db_session, subscription_service: SubscriptionService, event: stripe.Event) -> None:
+    """Log successful webhook processing."""
+    subscription_service.log_webhook_event(
+        db_session=db_session, event_type=event.type, stripe_event_id=event.id, status="processed"
+    )
+    db_session.commit()
+
+
+def _log_webhook_failure(
+    db_manager: DatabaseManager, subscription_service: SubscriptionService, event: stripe.Event, error: Exception
+) -> None:
+    """Log failed webhook processing in separate transaction."""
+    with db_manager.SessionLocal() as failure_session:
+        subscription_service.log_webhook_event(
+            db_session=failure_session,
+            event_type=event.type,
+            stripe_event_id=event.id,
+            status=f"failed: {str(error)}",
+        )
+        failure_session.commit()
+
+
 @router.post("/webhook", status_code=status.HTTP_200_OK)
 async def stripe_webhook(
     request: Request,
@@ -120,63 +195,23 @@ async def stripe_webhook(
     db_manager: Annotated[DatabaseManager, Depends(get_database_manager)],
 ) -> dict[str, str]:
     """Handle Stripe webhook events."""
-    # Get raw body for signature verification
     body = await request.body()
-
-    # Construct and verify event
     stripe_service = get_stripe_service()
-    try:
-        event = stripe_service.construct_webhook_event(body, stripe_signature)
-    except ValueError:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid payload")
-    except stripe.SignatureVerificationError:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Invalid signature")
-
-    # Check idempotency
+    event = _verify_webhook_signature(body, stripe_signature, stripe_service)
     subscription_service = SubscriptionService(db_manager, stripe_service)
-    if subscription_service.is_event_processed(event.id):
-        return {"status": "success", "message": "Event already processed"}
 
-    # Log event
     with db_manager.SessionLocal() as db_session:
-        subscription_service.log_webhook_event(
-            db_session=db_session, event_type=event.type, stripe_event_id=event.id, status="processing"
-        )
-        db_session.commit()
+        if _check_event_already_processed(db_session, subscription_service, event):
+            return {"status": "success", "message": "Event already processed"}
 
-    # Handle specific event types
-    try:
-        if event.type == "checkout.session.completed":
-            # Stripe returns dict, need to construct proper object
-            session = stripe.checkout.Session.construct_from(event.data.object, stripe.api_key)
-            subscription_service.handle_checkout_completed(session)
-
-        elif event.type == "customer.subscription.created":
-            subscription = stripe.Subscription.construct_from(event.data.object, stripe.api_key)
-            subscription_service.handle_subscription_created(subscription)
-
-        elif event.type == "customer.subscription.updated":
-            subscription = stripe.Subscription.construct_from(event.data.object, stripe.api_key)
-            subscription_service.handle_subscription_updated(subscription)
-
-        elif event.type == "customer.subscription.deleted":
-            subscription = stripe.Subscription.construct_from(event.data.object, stripe.api_key)
-            subscription_service.handle_subscription_deleted(subscription)
-
-        # Update event status to processed
-        with db_manager.SessionLocal() as db_session:
-            subscription_service.log_webhook_event(
-                db_session=db_session, event_type=event.type, stripe_event_id=event.id, status="processed"
-            )
-            db_session.commit()
-
-    except Exception as e:
-        # Log failure
-        with db_manager.SessionLocal() as db_session:
-            subscription_service.log_webhook_event(
-                db_session=db_session, event_type=event.type, stripe_event_id=event.id, status=f"failed: {str(e)}"
-            )
-            db_session.commit()
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Webhook processing failed")
+        try:
+            _process_webhook_event(db_session, subscription_service, event)
+            _log_webhook_success(db_session, subscription_service, event)
+        except Exception as e:
+            db_session.rollback()
+            _log_webhook_failure(db_manager, subscription_service, event, e)
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Webhook processing failed"
+            ) from e
 
     return {"status": "success"}
