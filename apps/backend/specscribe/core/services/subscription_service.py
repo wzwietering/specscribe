@@ -267,7 +267,19 @@ class SubscriptionService:
             status: Event processing status
             user_id: Optional user ID
         """
-        event = PaymentEventTable(
-            user_id=user_id, event_type=event_type, stripe_event_id=stripe_event_id, status=status
+        # Check if event already exists (for status updates)
+        existing_event = (
+            db_session.query(PaymentEventTable).filter(PaymentEventTable.stripe_event_id == stripe_event_id).first()
         )
-        db_session.add(event)
+
+        if existing_event:
+            # Update existing event status
+            existing_event.status = status
+            if user_id:
+                existing_event.user_id = user_id
+        else:
+            # Create new event
+            event = PaymentEventTable(
+                user_id=user_id, event_type=event_type, stripe_event_id=stripe_event_id, status=status
+            )
+            db_session.add(event)

@@ -14,6 +14,13 @@ os.environ.setdefault("ENVIRONMENT", "test")
 os.environ.setdefault("MODEL_ID", "mock:test-model")
 # Set high quota limit for tests to avoid hitting limits during test runs
 os.environ.setdefault("FREE_TIER_QUESTION_LIMIT", "1000")
+# Stripe test environment variables
+os.environ.setdefault("STRIPE_SECRET_KEY", "sk_test_fake_key_for_testing_123456789")
+os.environ.setdefault("STRIPE_WEBHOOK_SECRET", "whsec_test_fake_webhook_secret_123456789")
+os.environ.setdefault("STRIPE_PRICE_ID_MONTHLY", "price_test_monthly_123")
+os.environ.setdefault("STRIPE_PRICE_ID_ANNUAL", "price_test_annual_123")
+
+from unittest.mock import Mock, patch
 
 import pytest
 from fastapi.testclient import TestClient
@@ -152,3 +159,242 @@ def sample_session_data():
 def sample_answer_data():
     """Sample answer data for testing."""
     return {"answer_text": "This is a test answer for API testing"}
+
+
+# ============================================================================
+# Stripe Mock Fixtures
+# ============================================================================
+
+
+@pytest.fixture
+def mock_stripe_customer():
+    """Create a mock Stripe customer object."""
+    customer = Mock()
+    customer.id = "cus_test123"
+    customer.email = "test@example.com"
+    customer.name = "Test User"
+    customer.metadata = {"user_id": "test-user-id"}
+    return customer
+
+
+@pytest.fixture
+def mock_stripe_subscription():
+    """Create a mock Stripe subscription object."""
+    subscription = Mock()
+    subscription.id = "sub_test123"
+    subscription.customer = "cus_test123"
+    subscription.status = "active"
+    subscription.current_period_start = 1704067200  # 2024-01-01 00:00:00 UTC
+    subscription.current_period_end = 1706745600  # 2024-02-01 00:00:00 UTC
+    subscription.cancel_at_period_end = False
+    subscription.items = Mock()
+    subscription.items.data = [Mock()]
+    subscription.items.data[0].price = Mock()
+    subscription.items.data[0].price.recurring = Mock()
+    subscription.items.data[0].price.recurring.interval = "month"
+    return subscription
+
+
+@pytest.fixture
+def mock_webhook_signature():
+    """Mock webhook signature for testing."""
+    return "t=1234567890,v1=mock_signature_hash"
+
+
+@pytest.fixture
+def mock_stripe_constructs():
+    """Mock Stripe construct_from methods."""
+    with (
+        patch("stripe.checkout.Session.construct_from") as mock_session,
+        patch("stripe.Subscription.construct_from") as mock_subscription,
+    ):
+        yield mock_session, mock_subscription
+
+
+@pytest.fixture
+def webhook_payload_checkout_completed():
+    """Webhook payload for checkout.session.completed event."""
+    return {
+        "id": "evt_checkout_123",
+        "type": "checkout.session.completed",
+        "data": {
+            "object": {
+                "id": "cs_test123",
+                "customer": "cus_test123",
+                "subscription": "sub_test123",
+                "mode": "subscription",
+            }
+        },
+    }
+
+
+@pytest.fixture
+def webhook_payload_subscription_created():
+    """Webhook payload for customer.subscription.created event."""
+    return {
+        "id": "evt_sub_created_123",
+        "type": "customer.subscription.created",
+        "data": {
+            "object": {
+                "id": "sub_test123",
+                "customer": "cus_test123",
+                "status": "active",
+                "current_period_start": 1704067200,  # 2024-01-01
+                "current_period_end": 1706745600,  # 2024-02-01
+                "cancel_at_period_end": False,
+                "items": {"data": [{"price": {"recurring": {"interval": "month"}}}]},
+            }
+        },
+    }
+
+
+@pytest.fixture
+def webhook_payload_subscription_updated():
+    """Webhook payload for customer.subscription.updated event."""
+    return {
+        "id": "evt_sub_updated_123",
+        "type": "customer.subscription.updated",
+        "data": {
+            "object": {
+                "id": "sub_test123",
+                "customer": "cus_test123",
+                "status": "past_due",
+                "current_period_start": 1704067200,
+                "current_period_end": 1706745600,
+                "cancel_at_period_end": False,
+                "items": {"data": [{"price": {"recurring": {"interval": "month"}}}]},
+            }
+        },
+    }
+
+
+@pytest.fixture
+def webhook_payload_subscription_deleted():
+    """Webhook payload for customer.subscription.deleted event."""
+    return {
+        "id": "evt_sub_deleted_123",
+        "type": "customer.subscription.deleted",
+        "data": {
+            "object": {
+                "id": "sub_test123",
+                "customer": "cus_test123",
+                "status": "canceled",
+                "current_period_start": 1704067200,
+                "current_period_end": 1706745600,
+                "cancel_at_period_end": False,
+                "items": {"data": [{"price": {"recurring": {"interval": "month"}}}]},
+            }
+        },
+    }
+
+
+@pytest.fixture
+def mock_stripe_checkout_session():
+    """Create a mock Stripe checkout session object."""
+    session = Mock()
+    session.id = "cs_test123"
+    session.url = "https://checkout.stripe.com/c/pay/cs_test123"
+    session.customer = "cus_test123"
+    session.subscription = "sub_test123"
+    session.mode = "subscription"
+    session.payment_status = "unpaid"
+    return session
+
+
+@pytest.fixture
+def mock_stripe_portal_session():
+    """Create a mock Stripe portal session object."""
+    session = Mock()
+    session.url = "https://billing.stripe.com/p/session_test123"
+    return session
+
+
+@pytest.fixture
+def mock_stripe_event_checkout_completed():
+    """Create a mock Stripe webhook event for checkout.session.completed."""
+    event = Mock()
+    event.id = "evt_test_checkout_123"
+    event.type = "checkout.session.completed"
+    event.data = Mock()
+    event.data.object = Mock()
+    event.data.object.id = "cs_test123"
+    event.data.object.customer = "cus_test123"
+    event.data.object.subscription = "sub_test123"
+    event.data.object.mode = "subscription"
+    return event
+
+
+@pytest.fixture
+def mock_stripe_event_subscription_created():
+    """Create a mock Stripe webhook event for customer.subscription.created."""
+    event = Mock()
+    event.id = "evt_test_sub_created_123"
+    event.type = "customer.subscription.created"
+    event.data = Mock()
+    event.data.object = Mock()
+    event.data.object.id = "sub_test123"
+    event.data.object.customer = "cus_test123"
+    event.data.object.status = "active"
+    event.data.object.current_period_start = 1704067200
+    event.data.object.current_period_end = 1706745600
+    event.data.object.cancel_at_period_end = False
+    event.data.object.items = Mock()
+    event.data.object.items.data = [Mock()]
+    event.data.object.items.data[0].price = Mock()
+    event.data.object.items.data[0].price.recurring = Mock()
+    event.data.object.items.data[0].price.recurring.interval = "month"
+    return event
+
+
+@pytest.fixture
+def mock_stripe_event_subscription_updated():
+    """Create a mock Stripe webhook event for customer.subscription.updated."""
+    event = Mock()
+    event.id = "evt_test_sub_updated_123"
+    event.type = "customer.subscription.updated"
+    event.data = Mock()
+    event.data.object = Mock()
+    event.data.object.id = "sub_test123"
+    event.data.object.customer = "cus_test123"
+    event.data.object.status = "past_due"
+    event.data.object.current_period_start = 1704067200
+    event.data.object.current_period_end = 1706745600
+    event.data.object.cancel_at_period_end = False
+    event.data.object.items = Mock()
+    event.data.object.items.data = [Mock()]
+    event.data.object.items.data[0].price = Mock()
+    event.data.object.items.data[0].price.recurring = Mock()
+    event.data.object.items.data[0].price.recurring.interval = "month"
+    return event
+
+
+@pytest.fixture
+def mock_stripe_event_subscription_deleted():
+    """Create a mock Stripe webhook event for customer.subscription.deleted."""
+    event = Mock()
+    event.id = "evt_test_sub_deleted_123"
+    event.type = "customer.subscription.deleted"
+    event.data = Mock()
+    event.data.object = Mock()
+    event.data.object.id = "sub_test123"
+    event.data.object.customer = "cus_test123"
+    event.data.object.status = "canceled"
+    event.data.object.current_period_start = 1704067200
+    event.data.object.current_period_end = 1706745600
+    event.data.object.cancel_at_period_end = False
+    event.data.object.items = Mock()
+    event.data.object.items.data = [Mock()]
+    event.data.object.items.data[0].price = Mock()
+    event.data.object.items.data[0].price.recurring = Mock()
+    event.data.object.items.data[0].price.recurring.interval = "month"
+    return event
+
+
+@pytest.fixture
+def stripe_test_env(monkeypatch):
+    """Set up Stripe test environment variables."""
+    monkeypatch.setenv("STRIPE_SECRET_KEY", "sk_test_fake_key")
+    monkeypatch.setenv("STRIPE_WEBHOOK_SECRET", "whsec_test_fake_secret")
+    monkeypatch.setenv("STRIPE_PRICE_ID_MONTHLY", "price_test_monthly")
+    monkeypatch.setenv("STRIPE_PRICE_ID_ANNUAL", "price_test_annual")
+    monkeypatch.setenv("FRONTEND_URL", "http://localhost:3000")
